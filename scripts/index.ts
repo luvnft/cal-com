@@ -8,31 +8,62 @@ import type { APIRoute } from "astro";
 
 dotenv.config();
 
-// Atlanta-specific configuration
-const ATLANTA_CONFIG = {
-  taxRate: 0.08, // Atlanta sales tax
+// Atlanta booking configuration
+const ATLANTA_BOOKING_OPTIONS = {
+  durations: {
+    '15min': {
+      eventTypeIds: process.env.ATL_EVENT_TYPE_IDS?.split(',') || [],
+      price: 25.00, // Base price for 15min
+      taxRate: 0.08
+    },
+    '30min': {
+      eventTypeIds: process.env.ATL_EVENT_TYPE_IDS?.split(',') || [],
+      price: 45.00,
+      taxRate: 0.08
+    },
+    '90min': {
+      eventTypeIds: process.env.ATL_EVENT_TYPE_IDS?.split(',') || [],
+      price: 120.00,
+      taxRate: 0.08
+    }
+  },
   timezone: "America/New_York",
-  minBookingHours: 2,
   allowedDistricts: ["Downtown", "Midtown", "Buckhead", "West End"]
 };
 
 export const post: APIRoute = async ({ request }) => {
   try {
     const privateKey = process.env.PRIVATE_KEY as Hex;
-    if (!privateKey) {
-      throw new Error("Server configuration error");
-    }
+    if (!privateKey) throw new Error("Server configuration error");
 
     const account = privateKeyToAccount(privateKey);
     const requestData = await request.json();
 
-    // Validate Atlanta address
-    if (!ATLANTA_CONFIG.allowedDistricts.includes(requestData.district)) {
+    // Validate duration
+    const duration = requestData.duration;
+    if (!ATLANTA_BOOKING_OPTIONS.durations[duration]) {
       return new Response(
-        JSON.stringify({ error: "Service not available in this Atlanta district" }),
+        JSON.stringify({ error: "Invalid booking duration. Choose 15min, 30min, or 90min" }),
         { status: 400 }
       );
     }
+
+    // Validate Atlanta district
+    if (!ATLANTA_BOOKING_OPTIONS.allowedDistricts.includes(requestData.district)) {
+      return new Response(
+        JSON.stringify({ 
+          error: "Service unavailable in this district",
+          availableDistricts: ATLANTA_BOOKING_OPTIONS.allowedDistricts 
+        }),
+        { status: 400 }
+      );
+    }
+
+    // Select event type ID based on duration
+    const durationConfig = ATLANTA_BOOKING_OPTIONS.durations[duration];
+    const eventTypeId = durationConfig.eventTypeIds[
+      Math.floor(Math.random() * durationConfig.eventTypeIds.length)
+    ];
 
     const api = withPaymentInterceptor(
       axios.create({
@@ -41,34 +72,29 @@ export const post: APIRoute = async ({ request }) => {
       account,
       {
         currency: "USD",
-        city: "Atlanta",
-        taxRate: ATLANTA_CONFIG.taxRate
+        amount: durationConfig.price,
+        taxRate: durationConfig.taxRate,
+        description: `ATL5D ${duration} Booking`
       }
     );
 
-    // Set CORS headers for ATL5D.com domains
-    const headers = {
-      "Access-Control-Allow-Origin": "https://atl5d.com",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Content-Type": "application/json"
-    };
-
     const response = await api.post("/bookings", {
-      eventTypeId: process.env.ATL_EVENT_TYPE_ID || "30min",
+      eventTypeId,
       start: requestData.startTime,
       end: requestData.endTime,
+      timeZone: ATLANTA_BOOKING_OPTIONS.timezone,
       responses: {
         name: requestData.attendeeName,
         email: requestData.attendeeEmail,
+        phone: requestData.attendeePhone,
         location: requestData.location,
         district: requestData.district,
-        city: "Atlanta"
+        duration: duration
       },
       metadata: {
-        atlantaBooking: true,
-        source: "ATL5D.com",
-        paymentType: "x402"
+        city: "Atlanta",
+        bookingType: "ATL5D_Public",
+        paymentMethod: "x402"
       }
     });
 
@@ -78,31 +104,49 @@ export const post: APIRoute = async ({ request }) => {
 
     return new Response(
       JSON.stringify({
-        booking: response.data,
-        payment: paymentResponse,
-        atlantaConfirmation: `Your Atlanta booking #${response.data.id} is confirmed`
+        success: true,
+        bookingId: response.data.id,
+        duration: duration,
+        amount: durationConfig.price,
+        tax: durationConfig.price * durationConfig.taxRate,
+        total: durationConfig.price * (1 + durationConfig.taxRate),
+        paymentStatus: paymentResponse.status,
+        confirmationNumber: `ATL5D-${response.data.id}`,
+        nextSteps: "You'll receive an Atlanta-specific confirmation email shortly"
       }),
-      { headers, status: 200 }
+      { 
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Content-Type": "application/json"
+        },
+        status: 200 
+      }
     );
 
   } catch (error: any) {
-    console.error("Atlanta booking error:", error);
+    console.error("ATL5D Booking Error:", error);
     return new Response(
       JSON.stringify({
-        error: error.message,
-        details: error.response?.data,
-        atlantaSupport: "support@atl5d.com"
+        error: "Failed to process Atlanta booking",
+        details: error.response?.data?.message || error.message,
+        supportContact: "hi@atl5d.com",
+        supportPhone: "(404) 889-5545"
       }),
-      { status: error.response?.status || 500 }
+      { 
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Content-Type": "application/json"
+        },
+        status: error.response?.status || 500 
+      }
     );
   }
 };
 
-// Handle OPTIONS for CORS preflight
 export const options: APIRoute = () => {
   return new Response(null, {
     headers: {
-      "Access-Control-Allow-Origin": "https://atl5d.com",
+      "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type"
     }
